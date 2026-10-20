@@ -1,0 +1,27 @@
+# JobSeeker ingestion config
+
+[search]
+keywords   = ["software engineer", "python developer"]
+locations  = ["Sydney NSW", "Melbourne VIC"]
+days_back  = 3          # only keep listings posted within this many days
+max_per_search = 100    # cap per (keyword x location) per source; keeps Apify costs bounded
+
+[apify]
+max_charge_usd_per_run = 2.00   # hard spend cap for each actor run
+
+# Each source maps to an Apify Store actor. Swap the actor ID if one breaks;
+# you'll also need to update its build_input/normalize functions in ingest.py.
+
+[sources.seek]
+enabled  = true
+actor    = "bovi/seek-jobs-scraper"
+site_key = "AU-Main"            # or "NZ-Main"
+
+[sources.indeed]
+enabled = true
+actor   = "misceres/indeed-scraper"
+domain  = "au.indeed.com"
+
+[sources.linkedin]
+enabled = true
+actor   = "curious_coder/linkedin-jobs-scraper"

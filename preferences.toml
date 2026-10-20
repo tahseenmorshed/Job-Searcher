@@ -1,0 +1,3 @@
+years_experience = 3
+max_years_gap = 3                    
+excluded_title_terms = ["staff", "principal", "solution architect", "solutions architect"]
