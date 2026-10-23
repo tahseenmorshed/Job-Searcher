@@ -64,6 +64,44 @@ CREATE TABLE IF NOT EXISTS prompt_versions (
     schema_json    TEXT,                         -- the Triage schema sent to the API
     first_used_at  TEXT NOT NULL
 );
+
+-- assess.py: how well each core job fits the resume. One row per job per assess version;
+-- the score and rating are worked out from assessment_criteria when shown (see scoring.py).
+CREATE TABLE IF NOT EXISTS assessments (
+    id                    INTEGER PRIMARY KEY,
+    job_id                INTEGER NOT NULL REFERENCES jobs(id),
+    assess_version        TEXT NOT NULL,
+    prompt_hash           TEXT,                  -- fingerprint of model + instructions + resume + schema
+    model                 TEXT,                  -- the model that answered (differs if a fallback ran)
+    triage_version        TEXT,                  -- the triage version that marked the job core
+    clearance_evidence    TEXT,
+    clearance_requirement TEXT,                  -- none / citizenship_only / obtainable / must_already_hold
+    listing_detail        TEXT,                  -- detailed / sparse
+    strengths             TEXT,                  -- JSON list
+    gaps                  TEXT,                  -- JSON list of {gap, how_to_address}
+    lead_with             TEXT,                  -- JSON list
+    overall_reason        TEXT,
+    model_rating          TEXT,                  -- the model's own overall rating, as a cross-check
+    cost_usd              REAL,
+    assessed_at           TEXT NOT NULL,
+    UNIQUE (job_id, assess_version)
+);
+
+CREATE TABLE IF NOT EXISTS assessment_criteria (
+    id                INTEGER PRIMARY KEY,
+    assessment_id     INTEGER NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    position          INTEGER NOT NULL,          -- order in the model's answer
+    requirement       TEXT NOT NULL,
+    listing_quote     TEXT,
+    generic           INTEGER NOT NULL,          -- 0 / 1: boilerplate any applicant could claim
+    importance_reason TEXT,
+    importance        TEXT NOT NULL,             -- must_have / preferred / bonus
+    flexible          INTEGER NOT NULL,          -- 0 / 1: "or similar", "or equivalent"
+    resume_quotes     TEXT,                      -- JSON list of short fragments copied from the resume
+    resume_evidence   TEXT,                      -- the model's own words on what the fragments show
+    match_reason      TEXT,
+    match             TEXT NOT NULL              -- direct / transferable / side_project / stretch / none
+);
 """
 
 
@@ -79,6 +117,10 @@ def connect():
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(evaluations)")}
     if "prompt_hash" not in columns:
         conn.execute("ALTER TABLE evaluations ADD COLUMN prompt_hash TEXT")
+        conn.commit()
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(assessment_criteria)")}
+    if "resume_quotes" not in columns:
+        conn.execute("ALTER TABLE assessment_criteria ADD COLUMN resume_quotes TEXT")
         conn.commit()
     return conn
 
