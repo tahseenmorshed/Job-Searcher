@@ -1,3 +1,4 @@
+import { JevPanel } from './JevPanel'
 import { RATING_LABELS, type Assessment, type Criterion, type Job, type Rating } from './types'
 
 // '2026-10-16T20:00:18.935Z' -> '16 Oct', like posted() in report.py.
@@ -117,10 +118,10 @@ const MATCH_STYLE = {
 
 function AssessmentDetails({ assessment: a }: { assessment: Assessment }) {
   const notes = [...a.caps]
-  if (a.model_rating !== a.rating) notes.push(`Model's own rating: ${RATING_LABELS[a.model_rating]}`)
+  if (a.model_rating && a.model_rating !== a.rating) notes.push(`Model's own rating: ${RATING_LABELS[a.model_rating]}`)
   if (a.listing_detail === 'sparse') notes.push('Sparse listing: rating is less reliable')
   if (a.flag_count > 0)
-    notes.push(`${a.flag_count} quote ${a.flag_count === 1 ? 'check' : 'checks'} failed: see the criteria below`)
+    notes.push(`${a.flag_count} ${a.flag_count === 1 ? 'check' : 'checks'} to review: see the criteria below`)
   if (a.clearance_evidence) notes.push(`Clearance: ${a.clearance_evidence}`)
 
   return (
@@ -147,6 +148,8 @@ function AssessmentDetails({ assessment: a }: { assessment: Assessment }) {
         <List title="Gaps" items={a.gaps.map((g) => `${g.gap} — ${g.how_to_address}`)} />
         <List title="Lead with" items={a.lead_with} />
       </details>
+
+      {a.criteria.some((c) => c.jev) && <JevPanel jobId={a.job_id} version={a.assess_version} criteria={a.criteria} />}
     </div>
   )
 }

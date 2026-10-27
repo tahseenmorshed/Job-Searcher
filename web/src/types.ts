@@ -60,15 +60,18 @@ export interface Criterion {
   match: 'direct' | 'transferable' | 'side_project' | 'stretch' | 'none'
   weight: number
   score: number
-  flags: string[] // quote checks from checks.py
+  flags: string[] // quote checks from checks.py (or low-confidence checks for Jev)
+  jev: Record<string, unknown> | null // Jev's probabilities; null for Sonnet and Haiku
 }
 
 export interface Assessment {
+  job_id: number
+  assess_version: string
   score: number
   rating: Rating
   caps: string[]
   flag_count: number
-  model_rating: Rating
+  model_rating: Rating | null // null for Jev, which gives no overall rating
   listing_detail: 'detailed' | 'sparse'
   clearance_requirement: string
   clearance_evidence: string | null

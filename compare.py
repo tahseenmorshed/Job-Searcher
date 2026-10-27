@@ -82,7 +82,7 @@ def summary(base_v, other_v, base, other, jobs):
         flagged = sum(1 for a in rows if a["flag_count"])
         flags = sum(a["flag_count"] for a in rows)
         print(f"  {v:<22} cost ${cost:.3f} (${cost / len(rows):.4f}/job) · {crit:.1f} criteria/job · "
-              f"{flags} quote flags on {flagged} jobs")
+              f"{flags} flags on {flagged} jobs")
 
     # Final ratings and scores.
     rating_pairs = [(base[j]["rating"], other[j]["rating"]) for j in shared]

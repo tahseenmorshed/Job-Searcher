@@ -88,7 +88,8 @@ def rated_assessments(conn, version):
             a[key] = json.loads(a[key] or "[]")
         a["criteria"] = [
             {**dict(c), "generic": bool(c["generic"]), "flexible": bool(c["flexible"]),
-             "resume_quotes": json.loads(c["resume_quotes"] or "[]")}
+             "resume_quotes": json.loads(c["resume_quotes"] or "[]"),
+             "jev": json.loads(c["jev"]) if c["jev"] else None}
             for c in conn.execute(
                 "SELECT * FROM assessment_criteria WHERE assessment_id = ? ORDER BY position", (a["id"],))
         ]

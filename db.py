@@ -100,7 +100,44 @@ CREATE TABLE IF NOT EXISTS assessment_criteria (
     resume_quotes     TEXT,                      -- JSON list of short fragments copied from the resume
     resume_evidence   TEXT,                      -- the model's own words on what the fragments show
     match_reason      TEXT,
-    match             TEXT NOT NULL              -- direct / transferable / side_project / stretch / none
+    match             TEXT NOT NULL,             -- direct / transferable / side_project / stretch / none
+    jev               TEXT                       -- JSON: Jev's probabilities and confidence (Jev versions only)
+);
+
+-- requirements.py: the requirements Haiku lists for each core job, before Jev rates them.
+CREATE TABLE IF NOT EXISTS extractions (
+    id                   INTEGER PRIMARY KEY,
+    job_id               INTEGER NOT NULL REFERENCES jobs(id),
+    requirements_version TEXT NOT NULL,          -- e.g. reqs-v1
+    prompt_hash          TEXT,                   -- matches prompt_versions.prompt_hash (Haiku's instructions)
+    model                TEXT,
+    triage_version       TEXT,                   -- the triage version that marked the job core
+    cost_usd             REAL,
+    extracted_at         TEXT NOT NULL,
+    UNIQUE (job_id, requirements_version)
+);
+
+CREATE TABLE IF NOT EXISTS requirements (
+    id               INTEGER PRIMARY KEY,
+    extraction_id    INTEGER NOT NULL REFERENCES extractions(id) ON DELETE CASCADE,
+    position         INTEGER NOT NULL,
+    listing_quote    TEXT,                       -- the listing sentence it came from
+    requirement      TEXT NOT NULL,              -- a name that says on its own what's needed
+    generic          INTEGER NOT NULL,           -- 0 / 1: boilerplate any applicant could claim
+    haiku_importance TEXT                        -- Haiku's own guess, kept only to compare with Jev's
+);
+
+-- Every Jev request exactly as sent, with its raw answers, so any rating can be traced back to
+-- the questions behind it (python assess_jev.py --show-requests <job id>).
+CREATE TABLE IF NOT EXISTS jev_requests (
+    id            INTEGER PRIMARY KEY,
+    assessment_id INTEGER NOT NULL REFERENCES assessments(id) ON DELETE CASCADE,
+    request_no    INTEGER NOT NULL,              -- 1 = reads the listing, 2 = reads the resume
+    state         TEXT NOT NULL,                 -- JSON: what Jev read
+    questions     TEXT NOT NULL,                 -- JSON: every question, as sent
+    answers       TEXT NOT NULL,                 -- JSON: Jev's raw answers
+    model         TEXT,
+    input_tokens  INTEGER
 );
 """
 
@@ -121,6 +158,14 @@ def connect():
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(assessment_criteria)")}
     if "resume_quotes" not in columns:
         conn.execute("ALTER TABLE assessment_criteria ADD COLUMN resume_quotes TEXT")
+        conn.commit()
+    if "jev" not in columns:
+        conn.execute("ALTER TABLE assessment_criteria ADD COLUMN jev TEXT")
+        conn.commit()
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(assessments)")}
+    if "requirements_version" not in columns:
+        # Which requirements.py version a Jev result rated (null: Sonnet's or Haiku's own list).
+        conn.execute("ALTER TABLE assessments ADD COLUMN requirements_version TEXT")
         conn.commit()
     return conn
 

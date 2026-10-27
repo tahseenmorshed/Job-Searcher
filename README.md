@@ -152,14 +152,14 @@ The score and rating are worked out each time results are shown, never stored. C
 | What counts as core, adjacent or not relevant | the relevance guide in `profile.md` | bump `PROMPT_VERSION` in `evaluate.py` to re-triage |
 | Your years of experience, the gap you'll accept, titles to reject | `preferences.toml` | bump `PROMPT_VERSION` in `evaluate.py` |
 | Your work rights and current clearance | `[candidate]` in `preferences.toml` | the clearance cap applies immediately; bump `VERSION` in `assess_jev.py` for Jev to see the new facts |
-| Your experience | `resume.md` | bump `VERSION` in `assess_jev.py` to re-rate every job (Jev doesn't notice resume changes on its own) |
+| Your experience | `resume.md` | bump `VERSION` in `assess_jev.py` to re-rate every job (it warns you if you forget) |
 | How Haiku lists requirements | `SYSTEM` in `requirements.py` | bump `REQUIREMENTS_VERSION`, and `VERSION` in `assess_jev.py` |
 | Jev's questions and answer levels | `IMPORTANCE_LEVELS`, `MATCH_LEVELS`, `CLEARANCE_OPTIONS` and the question builders in `assess_jev.py` | bump `VERSION` in `assess_jev.py` |
 | Points, match shares, generic weight, rating cut-offs | the constants at the top of `scoring.py` | nothing: every job is re-rated instantly |
 | Which caps apply | `rate()` in `scoring.py` | nothing |
 | When a Jev answer is flagged as unsure | `LOW_CONFIDENCE` in `checks.py` | nothing |
 
-`evaluate.py` and `assess.py` warn you if their instructions or your profile changed without the version being bumped. `requirements.py` and `assess_jev.py` don't, so bump their versions yourself.
+Each AI step warns you before running if its instructions, questions, resume or profile changed since results were saved under the current version, so you don't forget to bump it.
 
 ## Other tools
 
@@ -237,10 +237,7 @@ Seek scraping through Apify is charged separately by Apify, and `ingest.py` prin
 | `resume.md`, `profile.md`, `preferences.toml` | Your details |
 | `data/jobseeker.db` | The database: listings, every AI result, every prompt and every Jev request |
 
-Not currently used by any script:
-
-- `config.toml`: an earlier plan for search settings across Seek, Indeed and LinkedIn. `ingest.py` uses its own constants instead.
-- `rubric.toml`, `skills.toml`: a fixed list of skill questions for Jev, replaced by Haiku's per-listing requirement lists.
+`config.toml` isn't read by any script. It was an earlier plan for search settings across Seek, Indeed and LinkedIn; `ingest.py` uses its own constants instead.
 
 ### Database tables
 

@@ -254,9 +254,10 @@ def show(conn, version=None):
         print(f"{scoring.LABELS[rating].upper()} ({len(group)})")
         for a in group:
             job = jobs[a["job_id"]]
-            disagree = "" if a["model_rating"] == rating else f" · model said {scoring.LABELS[a['model_rating']]}"
+            disagree = ("" if a["model_rating"] in (None, rating)
+                        else f" · model said {scoring.LABELS[a['model_rating']]}")
             sparse = " · sparse listing" if a["listing_detail"] == "sparse" else ""
-            flags = f" · {a['flag_count']} quote flags" if a["flag_count"] else ""
+            flags = f" · {a['flag_count']} flags" if a["flag_count"] else ""
             print(f"  {a['score']:>3}  {job['title']} · {job['company']}{disagree}{sparse}{flags}")
             for cap in a["caps"]:
                 print(f"       ! {cap}")

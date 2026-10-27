@@ -2,8 +2,9 @@
 
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
+import assess_jev
 import db
 import scoring
 from report import results
@@ -47,3 +48,13 @@ def jobs(version: str | None = None, assess_version: str | None = None, new: boo
     for row in rows:
         row["assessment"] = assessed.get(row["id"])
     return {"version": version, "assess_version": assess_version, "jobs": rows}
+
+
+@app.get("/api/jev-requests/{job_id}")
+def jev_requests(job_id: int, version: str):
+    """Exactly what Jev was asked for one job under one version, with its answers."""
+    conn = db.connect()
+    found = assess_jev.load_requests(conn, job_id, version)
+    if not found:
+        raise HTTPException(404, f"Job {job_id} has no Jev result under {version}")
+    return found

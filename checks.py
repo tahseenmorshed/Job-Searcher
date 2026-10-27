@@ -59,8 +59,24 @@ def found_in(fragment, source_words):
     return False
 
 
+# Jev answers below this confidence are flagged as uncertain.
+LOW_CONFIDENCE = 0.5
+
+
+def check_jev(c):
+    """Flags for a Jev-rated criterion: answers Jev wasn't sure about."""
+    flags = []
+    for field, label in (("importance", "how strongly it's needed"), ("match", "how well you match")):
+        confidence = c["jev"][f"{field}_confidence"]
+        if confidence < LOW_CONFIDENCE:
+            flags.append(f"Jev unsure about {label} (confidence {confidence:.2f})")
+    return flags
+
+
 def check_criterion(c, listing_words, resume_words):
     """Return a list of plain-English flags for one criterion (empty if it looks fine)."""
+    if c.get("jev"):
+        return check_jev(c)
     flags = []
     if c.get("listing_quote") and not found_in(c["listing_quote"], listing_words):
         flags.append(f'Listing quote not found in the listing: "{c["listing_quote"]}"')
