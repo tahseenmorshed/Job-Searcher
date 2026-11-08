@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import { FetchButton, FetchPanel } from './FetchPanel'
 import { KeptCard, RejectedRow } from './JobCard'
-import { REJECTED_GROUPS, type Job, type JobsResponse } from './types'
+import { SpendButton, SpendPanel } from './SpendPanel'
+import { useFetchTask } from './useFetchTask'
+import { REJECTED_GROUPS, type Job, type JobsResponse, type SpendSummary } from './types'
 
 type Tab = 'core' | 'adjacent' | 'rejected'
 
@@ -28,6 +31,15 @@ function App() {
   const [tab, setTab] = useState<Tab>('core')
   const [data, setData] = useState<JobsResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [spend, setSpend] = useState<SpendSummary | null>(null)
+  const [showSpend, setShowSpend] = useState(false)
+  const [showFetch, setShowFetch] = useState(false)
+  // Bumped when a fetch finishes, so jobs and spend are loaded again.
+  const [reloads, setReloads] = useState(0)
+  const fetchTask = useFetchTask(() => setReloads((n) => n + 1))
+  // A step waiting for approval keeps the panel open, so the question isn't missed.
+  const waiting = fetchTask.task?.status === 'waiting'
+  const fetchOpen = showFetch || waiting
 
   // Load the list of prompt versions once, when the page opens.
   useEffect(() => {
@@ -41,7 +53,16 @@ function App() {
       .catch(() => setError('Could not reach the API. Is uvicorn running?'))
   }, [])
 
-  // Reload jobs whenever the triage or assessment version changes.
+  // Spend totals: loaded with the page, and again each time the panel opens or a fetch finishes,
+  // so a run made while the page was open shows up.
+  useEffect(() => {
+    fetch('/api/spend')
+      .then((res) => res.json())
+      .then(setSpend)
+      .catch(() => setSpend(null))
+  }, [showSpend, reloads])
+
+  // Reload jobs whenever the triage or assessment version changes, or a fetch finishes.
   useEffect(() => {
     const params = new URLSearchParams()
     if (version) params.set('version', version)
@@ -53,7 +74,7 @@ function App() {
         setError(null)
       })
       .catch(() => setError('Could not reach the API. Is uvicorn running?'))
-  }, [version, assessVersion])
+  }, [version, assessVersion, reloads])
 
   // Filters run here in the browser: all jobs are already loaded, so changing them is instant.
   const inDateRange = (data?.jobs ?? []).filter((j) => days === null || postedWithin(j, days))
@@ -81,6 +102,13 @@ function App() {
         <header className="flex flex-wrap items-center justify-between gap-4">
           <h1 className="text-2xl font-bold">JobSeeker</h1>
           <div className="flex flex-wrap items-center gap-3 text-sm">
+            <FetchButton
+              open={fetchOpen}
+              running={fetchTask.running}
+              waiting={waiting}
+              onClick={() => setShowFetch(!fetchOpen)}
+            />
+            {spend && <SpendButton total={spend.total_usd} open={showSpend} onClick={() => setShowSpend(!showSpend)} />}
             <select
               value={version || data?.version || ''}
               onChange={(e) => setVersion(e.target.value)}
@@ -144,6 +172,9 @@ function App() {
             </button>
           )}
         </div>
+
+        {fetchOpen && <FetchPanel fetchTask={fetchTask} reloads={reloads} />}
+        {showSpend && spend && <SpendPanel data={spend} />}
 
         {error && <p className="mt-6 rounded-md bg-red-50 p-3 text-sm text-red-700">{error}</p>}
 

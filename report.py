@@ -31,7 +31,7 @@ def posted(value):
 
 def results(conn, version, since=None):
     """One row per job: the job's details joined with its result for this prompt version."""
-    sql = """SELECT j.id, j.title, j.company, j.location, j.work_arrangement, j.salary_text, j.posted_at,
+    sql = """SELECT j.id, j.source, j.title, j.company, j.location, j.work_arrangement, j.salary_text, j.posted_at,
                     j.url, j.first_seen_at, e.decision, e.reason, e.relevance, e.relevance_reason,
                     e.min_years_required, e.years_evidence, e.open_background_evidence, e.title_term
              FROM evaluations e JOIN jobs j ON j.id = e.job_id

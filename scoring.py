@@ -14,6 +14,9 @@ import checks
 IMPORTANCE_WEIGHT = {"must_have": 3, "preferred": 2, "bonus": 1}
 # Boilerplate like "strong communicator" counts for a quarter, so it can't inflate the score.
 GENERIC_FACTOR = 0.25
+# Duties ("you'll help shape technical decisions") count for half, and never cap the rating:
+# they describe the job, not what's needed to get it. Only reqs-v2 lists label them.
+DUTY_FACTOR = 0.5
 
 # How well the resume covers a criterion.
 MATCH_SCORE = {"direct": 1.0, "transferable": 0.75, "side_project": 0.5, "stretch": 0.25, "none": 0.0}
@@ -37,8 +40,13 @@ def criterion_score(c):
     return MATCH_SCORE[c["match"]]
 
 
+def is_duty(c):
+    return (c.get("jev") or {}).get("kind") == "duty"
+
+
 def criterion_weight(c):
-    return IMPORTANCE_WEIGHT[c["importance"]] * (GENERIC_FACTOR if c["generic"] else 1)
+    return (IMPORTANCE_WEIGHT[c["importance"]] * (GENERIC_FACTOR if c["generic"] else 1)
+            * (DUTY_FACTOR if is_duty(c) else 1))
 
 
 def lower(rating, cap):
@@ -54,7 +62,7 @@ def rate(criteria, clearance_requirement):
 
     caps = []
     for c in criteria:
-        if c["importance"] != "must_have" or c["generic"]:
+        if c["importance"] != "must_have" or c["generic"] or is_duty(c):
             continue
         if c["match"] == "none":
             rating = lower(rating, "stretch")

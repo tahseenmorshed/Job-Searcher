@@ -1,21 +1,25 @@
 # JobSeeker
 
-JobSeeker fetches software job listings from Seek, filters out the ones that don't fit, and rates the rest against your resume, one requirement at a time. A web page shows the results, best match first, with a full breakdown of how each rating was reached.
+JobSeeker fetches software job listings from Seek and LinkedIn, filters out the ones that don't fit, and rates the rest against your resume, one requirement at a time. A web page runs the whole thing with one button and shows the results, best match first, with a full breakdown of how each rating was reached.
 
 Most of the work is done by AI, but every rating can be traced back to the exact questions asked and the answers given. The final score is worked out by plain code from those answers, so it's consistent and you can tune it without paying for anything to be re-run.
 
 ## How it works
 
 ```
- Seek ──► ingest.py ──► evaluate.py ──► requirements.py ──► assess_jev.py ──► scoring.py ──► web UI
-          (Apify)       (Haiku)         (Haiku)             (Jev)              (code)
-          fetch         triage          list the            rate each          score and
-          listings      core/adjacent/  requirements        requirement        rating
-                        rejected
+ Seek ──────► ingest.py ─────────┐
+ LinkedIn ──► ingest_linkedin.py ┴► triage.py ──► requirements.py ──► assess_jev.py ──► scoring.py ──► web UI
+              (Apify)               (Haiku)       (Haiku)             (Jev)              (code)
+              fetch listings        triage        list the            rate each          score and
+                                    core/         requirements        requirement        rating
+                                    adjacent/
+                                    rejected
 ```
 
-1. **Fetch** (`ingest.py`): an Apify scraper pulls recent Seek listings and saves them to a local SQLite database. Each run also writes a JSON backup to `data/`.
-2. **Triage** (`evaluate.py`, Claude Haiku): each new listing is sorted into **core** (software engineering), **adjacent** (DevOps, data, QA and similar) or **rejected**. Titles like "Principal" are rejected without an AI call, and jobs asking for far more experience than you have are rejected too. Only core jobs go further.
+The **Fetch listings** button on the page runs all of these in order (`pipeline.py`). You can also run each step as a script.
+
+1. **Fetch** (`ingest.py`, `ingest_linkedin.py`): Apify scrapers pull recent Seek and LinkedIn listings for Perth, Melbourne and Sydney and save them to a local SQLite database. Each run also writes a JSON backup to `data/`. Listings that are the same job as one already saved, from either site, are hidden (`dedupe.py`).
+2. **Triage** (`triage.py`, Claude Haiku): each new listing is sorted into **core** (software engineering), **adjacent** (DevOps, data, QA and similar) or **rejected**. Titles like "Principal" are rejected without an AI call, and jobs asking for far more experience than you have are rejected too. Only core jobs go further.
 3. **List the requirements** (`requirements.py`, Claude Haiku): Haiku reads the listing, never your resume, and writes out each requirement as a stand-alone name plus the listing sentence it came from. "Java and Kubernetes" becomes two requirements, while "Java, C# or Go" stays one, since any of them is enough.
 4. **Rate each requirement** (`assess_jev.py`, Jev): [Jev](https://docs.typesafe.ai) is a model from TypeSafe that never writes text. It answers fixed questions with a probability for each possible answer. For every requirement it answers two questions:
    - **How essential is it?** It reads the listing and picks must-have, preferred or bonus.
@@ -25,7 +29,7 @@ Most of the work is done by AI, but every rating can be traced back to the exact
 
 ### Nothing is paid for twice
 
-Every AI result is saved under a **version name** (`triage-v3`, `reqs-v1`, `assess-v2-jev`). Each script only processes jobs that don't yet have a result under its current version, and shows the count and estimated cost before spending anything. Failed jobs aren't saved, so they're retried on the next run.
+Every AI result is saved under a **version name** (`triage-v4`, `reqs-v2`, `assess-v4-jev`). Each script only processes jobs that don't yet have a result under its current version, and shows the count and estimated cost before spending anything. Failed jobs aren't saved, so they're retried on the next run. The same goes for jobs left over when you stop or abort a run.
 
 To redo a step on purpose, for example after changing its instructions, change its version name. Old results stay in the database under the old name, so you can compare before and after.
 
@@ -44,7 +48,7 @@ cd web && npm install && cd ..
 Create a `.env` file in the project folder:
 
 ```
-APIFY_TOKEN=...          # apify.com: runs the Seek scraper
+APIFY_TOKEN=...          # apify.com: runs the Seek and LinkedIn scrapers
 ANTHROPIC_API_KEY=...    # console.anthropic.com: Claude Haiku (and Sonnet, optionally)
 TYPESAFE_API_KEY=...     # typesafe.ai: Jev
 # TYPESAFE_BASE_URL=...  # only if you reach Jev through a gateway such as OpenRouter
@@ -58,26 +62,80 @@ Then add your own details (see [Customising](#customising)):
 
 ## Running it
 
-Run these from the project folder with the virtual environment active. Every step that spends money asks first.
+Run these from the project folder with the virtual environment active.
 
-```bash
-python ingest.py           # fetch new listings from Seek
-python evaluate.py         # triage the new ones
-python requirements.py     # Haiku lists requirements for new core jobs
-python assess_jev.py       # Jev rates them
-```
+### Start the app
 
-Then start the web UI, in two terminals:
+In two terminals:
 
 ```bash
 uvicorn api:app --reload   # the API, on port 8000
 ```
 
 ```bash
-cd web && npm run dev      # the page, usually at http://localhost:5173
+cd web && npm run dev      # the page, at http://localhost:5173
 ```
 
-Start the API first; the page shows "Could not reach the API" without it. Restart the API after changing any Python file it uses.
+Start the API first; the page shows "Could not reach the API" without it. `--reload` restarts the API when you save a Python file, so you don't need to restart it by hand. Don't edit Python files during a run, though: the restart cuts the run off (see below).
+
+### Fetching and processing from the page
+
+Click **Fetch listings** in the page header to open the panel.
+
+1. **Pick cities:** any of Perth, Melbourne and Sydney.
+2. **Pick sites:** Seek, LinkedIn or both, each with its own timeframe. Seek offers 1, 3, 7, 14 or 31 days; LinkedIn's scraper offers 1, 7 or 30. The panel shows the fetch's estimated cost, based on recent runs.
+3. **Then:** leave **Triage, list requirements and rate new jobs** ticked to process the new jobs straight after the fetch. Tick **Don't ask before each step** to run every step without stopping for approval.
+4. Click **Fetch now**. Or click **Process saved jobs** to skip the fetch and only process jobs already saved but not yet done.
+
+While it runs:
+
+- **Step list:** each step shows its status and progress, such as "12 of 40".
+- **Approval:** before each AI step, the panel shows how many jobs it will process, the model and the estimated cost, and waits for **Continue** or **Stop here**, like the scripts' y/N. Stopping skips the later steps too, since each works on what the one before produced. The panel stays open while a question is waiting, and a question left unanswered for an hour counts as Stop.
+- **Abort:** stops a run part way. The job in progress finishes first, so the button shows "Stopping…" for a moment. Jobs already done, and what was spent on them, are kept, and the rest are picked up next run. During a fetch, the scrape can't be cut short (Apify is already running it), so the fetch finishes and saves its jobs, then the run stops before any AI step. Pressed while a question is waiting, Abort counts as Stop.
+- **Log:** a small window shows each job as it's fetched, triaged and rated, like the scripts print. The API keeps it in memory only, so it's gone after a restart.
+- **Last fetched:** a table shows when each city was last fetched from each site.
+
+When the run finishes or is aborted, the job list and spend totals reload by themselves. Only one run can go at a time. If you reload the page mid-run, it picks the run up again.
+
+Both sites are fetched at the same time, and duplicates are checked once at the end. If one site fails, the other's jobs are still saved and processed.
+
+Triage reads `profile.md` and `preferences.toml` when the API starts. With `--reload` that's handled for Python files only, so restart the API after changing either. Rating reads `resume.md` fresh each run, and the scripts always read the current files.
+
+If the API restarts mid-run (an edit with `--reload`, or a crash), the run is marked failed. Anything already saved stays saved, but Apify runs that had started may still finish and be billed.
+
+### Running each step as a script
+
+The page and the scripts use the same code, so you can do it all from the terminal instead. Every step that spends money shows its count and estimated cost and asks first. Ctrl-C stops a step part way and keeps what was done.
+
+```bash
+python ingest.py           # fetch from Seek (--city Perth, --days 3, --max-pages, --dry-run)
+python ingest_linkedin.py  # fetch from LinkedIn (--city, --days 1/7/30, --dry-run, --from-file)
+python triage.py           # triage the new ones
+python requirements.py     # Haiku lists requirements for new core jobs
+python assess_jev.py       # Jev rates them
+```
+
+Results show up in the page the next time it loads.
+
+### Over HTTP
+
+The page uses these endpoints, so you can drive a run with `curl` too:
+
+```bash
+# what the fetch would cost (free); the AI steps are estimated when they're reached
+curl -X POST localhost:8000/api/tasks/estimate -H 'Content-Type: application/json' \
+     -d '{"kind": "pipeline", "params": {"fetch": {"cities": ["Perth"], "seek": {"days": 3}, "linkedin": null}}}'
+# start it: answers 202 with the task, or 409 if one is already running
+curl -X POST localhost:8000/api/tasks -H 'Content-Type: application/json' \
+     -d '{"kind": "pipeline", "params": {"fetch": {"cities": ["Perth"], "seek": {"days": 3}, "linkedin": null}}}'
+curl localhost:8000/api/tasks/1                 # status, steps, and the question it's waiting on
+curl -X POST localhost:8000/api/tasks/1/approval -H 'Content-Type: application/json' -d '{"approve": true}'
+curl -X POST localhost:8000/api/tasks/1/abort   # stop after the job in progress
+curl localhost:8000/api/tasks/1/log?after=0     # the log, from line 0
+curl localhost:8000/api/scrapes                 # when each city was last fetched from each site
+```
+
+Set a site to `null` to skip it, or set `"fetch": null` to only process saved jobs. Add `"auto_approve": true` to skip the approval questions. Timeframes a site doesn't offer are refused before Apify is called.
 
 ### Trying a few jobs first
 
@@ -148,18 +206,21 @@ The score and rating are worked out each time results are shown, never stored. C
 
 | To change | Edit | Then |
 |---|---|---|
-| What's searched on Seek (keyword, cities, days back, pages) | the constants at the top of `ingest.py` | nothing |
-| What counts as core, adjacent or not relevant | the relevance guide in `profile.md` | bump `PROMPT_VERSION` in `evaluate.py` to re-triage |
-| Your years of experience, the gap you'll accept, titles to reject | `preferences.toml` | bump `PROMPT_VERSION` in `evaluate.py` |
+| The Seek search keyword and city list | `SEARCH_SLUG` and `SEEK_LOCATIONS` at the top of `ingest.py` | nothing (cities and days are picked on the page, or with `--city` and `--days`) |
+| The LinkedIn search keyword and city list | `KEYWORDS` and `LINKEDIN_LOCATIONS` at the top of `ingest_linkedin.py` | nothing |
+| When two listings count as the same job | `DUPLICATE_SIMILARITY`, `POSSIBLE_SIMILARITY` and `MAX_DAYS_APART` at the top of `dedupe.py` | `python dedupe.py` to re-check every listing |
+| How Haiku triages listings | `SYSTEM_PROMPT` and `LISTING_PROMPT` at the top of `triage.py` | bump `PROMPT_VERSION` in `triage.py` |
+| What counts as core, adjacent or not relevant | the relevance guide in `profile.md` | bump `PROMPT_VERSION` in `triage.py` to re-triage, and restart the API |
+| Your years of experience, the gap you'll accept, titles to reject | `preferences.toml` | bump `PROMPT_VERSION` in `triage.py`, and restart the API |
 | Your work rights and current clearance | `[candidate]` in `preferences.toml` | the clearance cap applies immediately; bump `VERSION` in `assess_jev.py` for Jev to see the new facts |
 | Your experience | `resume.md` | bump `VERSION` in `assess_jev.py` to re-rate every job (it warns you if you forget) |
-| How Haiku lists requirements | `SYSTEM` in `requirements.py` | bump `REQUIREMENTS_VERSION`, and `VERSION` in `assess_jev.py` |
-| Jev's questions and answer levels | `IMPORTANCE_LEVELS`, `MATCH_LEVELS`, `CLEARANCE_OPTIONS` and the question builders in `assess_jev.py` | bump `VERSION` in `assess_jev.py` |
+| How Haiku lists requirements | `SYSTEM_PROMPT` and `LISTING_PROMPT` at the top of `requirements.py` | bump `REQUIREMENTS_VERSION`, and `VERSION` in `assess_jev.py` |
+| Jev's questions and answer levels | the question templates (`IMPORTANCE_QUESTION` and others) and answer levels at the top of `assess_jev.py` | bump `VERSION` in `assess_jev.py` |
 | Points, match shares, generic weight, rating cut-offs | the constants at the top of `scoring.py` | nothing: every job is re-rated instantly |
 | Which caps apply | `rate()` in `scoring.py` | nothing |
 | When a Jev answer is flagged as unsure | `LOW_CONFIDENCE` in `checks.py` | nothing |
 
-Each AI step warns you before running if its instructions, questions, resume or profile changed since results were saved under the current version, so you don't forget to bump it.
+Each AI step warns you before running if its instructions, questions, resume or profile changed since results were saved under the current version, so you don't forget to bump it. On the page, the warning appears in the approval question and the log.
 
 ## Other tools
 
@@ -215,14 +276,33 @@ Measured on real runs unless marked as an estimate:
 | Full assessment, the alternative | Sonnet | $0.035 |
 | Full assessment, the alternative | Haiku | $0.0033 |
 
-Seek scraping through Apify is charged separately by Apify, and `ingest.py` prints the cost of each run.
+Seek and LinkedIn scraping is charged by Apify. Its cost is saved after each fetch, and the page's fetch estimate is based on it.
+
+### Seeing what you've spent
+
+Every paid run is saved to the `runs` table: when it ran, which step and version, how many jobs, the estimate you agreed to and the actual cost. The row is written as soon as you agree and updated after every job, so a crash or Ctrl-C still keeps what was spent. Calls that were billed but then failed (a cut-off answer, say) are counted too. Each saved result links to the run that paid for it (`run_id`).
+
+```bash
+python spend.py              # total, this month, by step, by month, and the latest runs
+python spend.py --runs 30    # more runs
+python spend.py --backfill   # add spend saved before runs were recorded, and fetch Apify run costs
+```
+
+`--backfill` is safe to run again: it only adds what's missing and refreshes Apify costs, which Apify can finalise a little after a run ends. It fetches every run on your Apify account, not only the Seek scraper's, and shows each actor's name.
+
+In the web UI, the **Spent $…** button at the top opens the same totals and latest runs.
+
+Anthropic and Jev costs are worked out from token counts at the prices set in each script, so they're close to, not exactly, what you're billed. Triage results from `triage-v1` were imported without costs, so they aren't counted.
 
 ## Files
 
 | File | What it does |
 |---|---|
+| `fetch.py` | Fetches from the sites and cities you pick, both sites at once, then checks for duplicates; used by the page |
 | `ingest.py` | Fetches Seek listings through Apify and saves them |
-| `evaluate.py` | Triage with Haiku: core, adjacent or rejected |
+| `ingest_linkedin.py` | Fetches LinkedIn listings through Apify and saves them (`--from-file` loads a saved backup for free) |
+| `dedupe.py` | Hides listings that are the same job as another, from either site; runs after each fetch (`--show` lists the pairs) |
+| `triage.py` | Triage with Haiku: core, adjacent or rejected |
 | `requirements.py` | Haiku lists each core job's requirements |
 | `assess_jev.py` | Jev rates each requirement; also `--dry` and `--show-requests` |
 | `assess.py` | The alternative: a full assessment with Sonnet or Haiku |
@@ -230,7 +310,11 @@ Seek scraping through Apify is charged separately by Apify, and `ingest.py` prin
 | `checks.py` | Quote checks for Claude assessments; confidence checks for Jev |
 | `compare.py` | Compares two assessment versions |
 | `report.py` | Text report of triage results |
-| `api.py` | The HTTP API the web UI reads from |
+| `pipeline.py` | Fetch, then triage, list requirements and rate, asking before each paid step: the page's Fetch button |
+| `tasks.py` | Tracks runs started from the page: status, steps, log, approval questions and abort |
+| `scrapes.py` | Records when each city was last fetched from each site (`python scrapes.py`; `--backfill` reads old backups in `data/`) |
+| `api.py` | The HTTP API the web UI uses: jobs, spend, and starting and following runs |
+| `spend.py` | Records what each run spends, and shows it (`python spend.py`) |
 | `db.py` | The database schema and saving listings |
 | `import_existing.py` | One-off import of older JSON files and triage results |
 | `web/` | The React web UI |
@@ -249,5 +333,9 @@ Seek scraping through Apify is charged separately by Apify, and `ingest.py` prin
 | `assessments`, `assessment_criteria` | Ratings per job and per requirement, from any model |
 | `jev_requests` | Every Jev request exactly as sent, with its answers |
 | `prompt_versions` | The exact instructions behind every version |
+| `runs` | Every paid run: step, version, jobs, estimate and actual cost |
+| `job_matches` | Pairs of listings found to be the same job |
+| `tasks` | Runs started from the page, with their settings and result |
+| `scrapes` | When each city was last fetched from each site |
 
 `data/` is in `.gitignore`, so your listings and results stay on your machine.

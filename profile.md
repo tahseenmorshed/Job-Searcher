@@ -29,7 +29,10 @@ or by how closely the tech stack matches mine. A backend role in Go is still cor
 - adjacent: technical roles close to software engineering, with or without much coding:
   - DevOps / platform / cloud engineering, data engineering, test automation / QA engineering,
     AI/ML engineering, embedded software.
-  - Development on a vendor's product: Salesforce, ServiceNow, Dynamics 365, SAP (ABAP) and similar.
+  - Development on a vendor's product (Salesforce, ServiceNow, Dynamics 365, SAP ABAP and similar)
+    when the job asks for experience in that product. If the product is learned on the job and the
+    listing asks for general software development experience (languages, SQL, building
+    applications), it's core.
   - Administration or configuration of a software platform (e.g. Salesforce Administrator,
     LIMS administrator), including low-code tools.
   - Data analyst and reporting / BI roles (e.g. Power BI developer).

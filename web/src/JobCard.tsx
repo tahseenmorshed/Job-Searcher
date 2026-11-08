@@ -1,5 +1,5 @@
 import { JevPanel } from './JevPanel'
-import { RATING_LABELS, type Assessment, type Criterion, type Job, type Rating } from './types'
+import { RATING_LABELS, SOURCE_LABELS, type Assessment, type Criterion, type Job, type Rating, type Source } from './types'
 
 // '2026-10-16T20:00:18.935Z' -> '16 Oct', like posted() in report.py.
 function formatDate(value: string | null): string {
@@ -10,6 +10,15 @@ function formatDate(value: string | null): string {
 }
 
 // Left border colour per group, so the group is visible at a glance while scrolling.
+// Which site a job came from, shown as a small label beside the posted date.
+function SourceBadge({ source }: { source: Source }) {
+  return (
+    <span className="rounded border border-slate-300 px-1.5 py-0.5 text-xs text-slate-600 dark:border-slate-600 dark:text-slate-300">
+      {SOURCE_LABELS[source] ?? source}
+    </span>
+  )
+}
+
 const ACCENT: Record<string, string> = {
   core: 'border-l-emerald-500',
   adjacent: 'border-l-sky-500',
@@ -28,6 +37,7 @@ export function KeptCard({ job }: { job: Job }) {
         <h3 className="font-semibold text-slate-900 dark:text-slate-100">{job.title}</h3>
         <span className="flex shrink-0 items-baseline gap-2 text-sm text-slate-500 dark:text-slate-400">
           {job.assessment && <RatingBadge assessment={job.assessment} />}
+          <SourceBadge source={job.source} />
           {formatDate(job.posted_at)}
         </span>
       </div>
@@ -53,7 +63,7 @@ export function KeptCard({ job }: { job: Job }) {
             rel="noreferrer"
             className="text-sm font-medium text-sky-700 hover:underline dark:text-sky-400"
           >
-            View on Seek ↗
+            View on {SOURCE_LABELS[job.source] ?? job.source} ↗
           </a>
         </div>
       )}
@@ -78,6 +88,9 @@ export function RejectedRow({ job }: { job: Job }) {
           <span className="font-medium text-slate-900 dark:text-slate-100">{job.title}</span>
         )}
         <span className="text-slate-500 dark:text-slate-400"> · {job.company}</span>
+        <span className="ml-2 align-middle">
+          <SourceBadge source={job.source} />
+        </span>
       </div>
       {why && <p className="text-sm text-slate-600 dark:text-slate-400">{why}</p>}
     </li>
