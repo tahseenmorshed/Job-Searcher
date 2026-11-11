@@ -2,9 +2,11 @@
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 import assess_jev
@@ -177,3 +179,11 @@ def abort_task(task_id: int):
 def latest_scrapes():
     """When each city was last fetched from each source (see scrapes.py)."""
     return scrapes.latest(db.connect())
+
+
+# The built web page (cd web && npm run build), served at / so uvicorn alone runs the whole app.
+# Must stay below every /api route: a mount at / matches everything, so routes after it never run.
+# Skipped when the page isn't built, so `npm run dev` on port 5173 works as before.
+WEB_DIST = Path("web/dist")
+if WEB_DIST.exists():
+    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

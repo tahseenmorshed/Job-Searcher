@@ -1,0 +1,12 @@
+# Run with: docker compose up --build   then open http://localhost:8000
+# Needs .env and resume.md in this folder first (neither is in git).
+services:
+  jobseeker:
+    build: .
+    ports:
+      - "8000:8000"                      # this computer's port 8000 -> the container's port 8000
+    env_file: .env                       # API keys, passed in as environment variables
+    volumes:
+      - ./data:/app/data                 # database and backups stay on this computer's disk
+      - ./resume.md:/app/resume.md:ro    # your resume, read-only
+    restart: unless-stopped              # starts again after a crash or when Docker restarts

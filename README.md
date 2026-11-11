@@ -35,7 +35,7 @@ To redo a step on purpose, for example after changing its instructions, change i
 
 ## Setup
 
-You need Python 3.11+, Node.js and three API keys.
+You need Python 3.11+, Node.js and three API keys. To run it in Docker instead, with nothing else installed, see [Run with Docker](#run-with-docker).
 
 ```bash
 python -m venv .venv
@@ -77,6 +77,59 @@ cd web && npm run dev      # the page, at http://localhost:5173
 ```
 
 Start the API first; the page shows "Could not reach the API" without it. `--reload` restarts the API when you save a Python file, so you don't need to restart it by hand. Don't edit Python files during a run, though: the restart cuts the run off (see below).
+
+### Run with Docker
+
+Docker runs the whole app, page and API, from one container on port 8000. The only thing the computer needs is [Docker Desktop](https://www.docker.com/products/docker-desktop/), on Windows (with WSL), Mac or Linux. You don't need Python or Node.
+
+**1. Get the code**
+
+```bash
+git clone https://github.com/tahseenmorshed/Job-Searcher.git
+cd Job-Searcher
+```
+
+**2. Copy in your private files.** They aren't in git, so bring them over yourself, by AirDrop or USB for example. Don't email or commit them.
+
+| File | Needed? | Why |
+|---|---|---|
+| `.env` | Yes | Your API keys (see [Setup](#setup)). Without it the container won't start |
+| `resume.md` | Yes | Without it, Docker creates an empty folder called `resume.md` and the app fails at startup. If that happens, delete the folder, copy in the file and start again |
+| `data/` | No | Copy it to keep your saved jobs and ratings. Leave it out to start with an empty database |
+
+**3. Start it.** Open Docker Desktop and wait until it says it's running, then:
+
+```bash
+docker compose up --build
+```
+
+Open http://localhost:8000. The first build takes a few minutes, while it downloads Python and Node and installs everything. Later builds take seconds unless the dependencies change.
+
+**Stopping and updating**
+
+| Command | What it does |
+|---|---|
+| Ctrl-C | Stops the app when it's running in the terminal |
+| `docker compose up --build -d` | Starts it in the background, so you can close the terminal |
+| `docker compose down` | Stops it when it's running in the background |
+| `docker compose logs -f` | Shows the app's output when it's running in the background |
+| `git pull` then `docker compose up --build` | Updates to the latest code |
+
+Stopping the container cuts off any run in progress, just like stopping uvicorn (see below).
+
+**How it fits together**
+
+- **`Dockerfile`** says what goes into the image. Node builds the page into `web/dist/`, then a Python image installs `requirements.txt`, copies in the code and the built page, and starts uvicorn on port 8000. uvicorn serves the API at `/api` and the page at `/` (see the end of `api.py`).
+- **`docker-compose.yml`** says how to run it: it connects port 8000, loads `.env`, and mounts `data/` and `resume.md` from your folder. `.env`, `data/` and `resume.md` are never built into the image, and `.dockerignore` keeps them out.
+- **Your data stays on your disk.** The database lives in `data/`, outside the container, so it survives rebuilds and you can back it up. Every computer keeps its own database: a fetch on one doesn't show up on another, and copying `data/` across is a one-time copy, not a sync.
+
+**Opening it from another device**
+
+Other devices on the same network can open `http://<this computer's IP>:8000`. To find the IP, run `ipconfig` on Windows and look for **IPv4 Address** under the Wi-Fi adapter, or run `ipconfig getifaddr en0` on a Mac. On Windows, set the Wi-Fi to a **Private** network, or the firewall may block it.
+
+The app has no login, so anyone on your network can press **Fetch listings** and spend money with your keys. Only do this on a network you trust. To allow this computer only, change the port line in `docker-compose.yml` to `"127.0.0.1:8000:8000"`.
+
+When you change code, keep using `uvicorn --reload` and `npm run dev` above for instant updates, and use Docker to run the app.
 
 ### Fetching and processing from the page
 
@@ -318,6 +371,7 @@ Anthropic and Jev costs are worked out from token counts at the prices set in ea
 | `db.py` | The database schema and saving listings |
 | `import_existing.py` | One-off import of older JSON files and triage results |
 | `web/` | The React web UI |
+| `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Run the whole app in one container (see [Run with Docker](#run-with-docker)) |
 | `resume.md`, `profile.md`, `preferences.toml` | Your details |
 | `data/jobseeker.db` | The database: listings, every AI result, every prompt and every Jev request |
 
