@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -203,17 +204,74 @@ class Plan:
         return len(self.jobs_list)
 
 
-def plan(conn, limit=None, job_ids=None, on_status=None):
-    """Find core jobs with no list under REQUIREMENTS_VERSION and estimate the cost (free)."""
+def prompt_warning(conn):
+    """A warning if lists were saved under this version with different instructions, else None."""
     older = [row[0] for row in conn.execute(
         """SELECT DISTINCT prompt_hash FROM extractions
            WHERE requirements_version = ? AND prompt_hash IS NOT NULL AND prompt_hash != ?""",
         (REQUIREMENTS_VERSION, PROMPT_HASH))]
-    warning = None
-    if older:
-        warning = (f"Haiku's instructions, schema or model changed since {REQUIREMENTS_VERSION} lists were saved "
-                   f"({', '.join(older)} -> {PROMPT_HASH}). Bump REQUIREMENTS_VERSION to list every job again; "
-                   f"continuing lists only new jobs, so old and new lists would be mixed.")
+    if not older:
+        return None
+    return (f"Haiku's instructions, schema or model changed since {REQUIREMENTS_VERSION} lists were saved "
+            f"({', '.join(older)} -> {PROMPT_HASH}). Bump REQUIREMENTS_VERSION to list every job again; "
+            f"continuing lists only new jobs, so old and new lists would be mixed.")
+
+
+# Core jobs (under TRIAGE_VERSION) with no list under REQUIREMENTS_VERSION, newest first.
+CORE_NOT_LISTED = """
+    SELECT j.id FROM jobs j JOIN evaluations e ON e.job_id = j.id
+    WHERE e.prompt_version = ? AND e.decision = 'keep' AND e.reason = 'core' AND j.duplicate_of IS NULL
+      AND NOT EXISTS (SELECT 1 FROM extractions x WHERE x.job_id = j.id AND x.requirements_version = ?)
+    ORDER BY j.posted_at DESC"""
+
+
+def record_prompt(conn):
+    conn.execute(
+        """INSERT OR IGNORE INTO prompt_versions
+               (prompt_hash, prompt_version, model, notes, system_text, schema_json, first_used_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (PROMPT_HASH, REQUIREMENTS_VERSION, MODEL, NOTES, SYSTEM,
+         json.dumps(Extraction.model_json_schema(), indent=1), datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+# --- For the streaming pipeline (pipeline.py) ---------------------------------------------------
+# find_work and save_answer run on the loop's thread; call_api runs in a thread pool and never
+# touches the database.
+
+@contextmanager
+def context():
+    load_dotenv()
+    yield anthropic.Anthropic(max_retries=5)  # more retries than the default, for rate limits
+
+
+def find_work(conn, skip=()):
+    ids = [row[0] for row in conn.execute(CORE_NOT_LISTED, (TRIAGE_VERSION, REQUIREMENTS_VERSION))
+           if row[0] not in skip]
+    if not ids:
+        return []
+    rows = {row["id"]: dict(row) for row in conn.execute(
+        f"SELECT * FROM jobs WHERE id IN ({','.join('?' * len(ids))})", ids)}
+    return [{"id": job_id, "job": rows[job_id]} for job_id in ids]
+
+
+def call_api(client, item):
+    """List one job's requirements. Returns ((extraction, response), cost)."""
+    extraction, response = extract(client, item["job"])
+    return (extraction, response), cost(response.usage)
+
+
+def save_answer(conn, client, item, answer, run_id):
+    extraction, response = answer
+    save(conn, item["job"], TRIAGE_VERSION, response.model, extraction, cost(response.usage), run_id)
+    job = item["job"]
+    return "listed", f"{len(extraction.requirements):>2} requirements · {job['title']} | {job['company']}"
+
+
+def plan(conn, limit=None, job_ids=None, on_status=None):
+    """Find core jobs with no list under REQUIREMENTS_VERSION and estimate the cost (free)."""
+    warning = prompt_warning(conn)
 
     untriaged = conn.execute(
         """SELECT COUNT(*) FROM jobs j WHERE j.duplicate_of IS NULL AND NOT EXISTS
@@ -227,12 +285,7 @@ def plan(conn, limit=None, job_ids=None, on_status=None):
         jobs = [dict(r) for r in conn.execute(
             f"SELECT j.* FROM jobs j WHERE j.id IN ({marks}) AND {not_done}", [*job_ids, REQUIREMENTS_VERSION])]
     else:
-        jobs = [dict(r) for r in conn.execute(
-            f"""SELECT j.* FROM jobs j JOIN evaluations e ON e.job_id = j.id
-                WHERE e.prompt_version = ? AND e.decision = 'keep' AND e.reason = 'core'
-                  AND j.duplicate_of IS NULL AND {not_done}
-                ORDER BY j.posted_at DESC""",
-            (TRIAGE_VERSION, REQUIREMENTS_VERSION))]
+        jobs = [item["job"] for item in find_work(conn)]
     p = Plan(warning=warning, note=note, jobs_list=jobs[:limit])
     if not p.jobs_list:
         return p
@@ -250,14 +303,7 @@ def plan(conn, limit=None, job_ids=None, on_status=None):
 
 def run(conn, p: Plan, log=print, show_lists=False, should_stop=None):
     """List each job's requirements with Haiku (paid). Returns how many were listed."""
-    conn.execute(
-        """INSERT OR IGNORE INTO prompt_versions
-               (prompt_hash, prompt_version, model, notes, system_text, schema_json, first_used_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (PROMPT_HASH, REQUIREMENTS_VERSION, MODEL, NOTES, SYSTEM,
-         json.dumps(Extraction.model_json_schema(), indent=1), datetime.now().isoformat(timespec="seconds")),
-    )
-    conn.commit()
+    record_prompt(conn)
     if not p.jobs_list:
         return {"listed": 0, "errors": 0, "cost_usd": 0.0}
 

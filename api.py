@@ -166,7 +166,8 @@ def answer_task(task_id: int, body: Approval):
 
 @app.post("/api/tasks/{task_id}/abort")
 def abort_task(task_id: int):
-    """Stop a running task after its current job. What's done and paid for so far is kept."""
+    """Stop a running task: no new calls start, and calls already running finish and are saved.
+    What's done and paid for so far is kept."""
     t = tasks.live(task_id)
     task = tasks.get(db.connect(), task_id)
     if not t or not task or task["status"] not in tasks.UNFINISHED:

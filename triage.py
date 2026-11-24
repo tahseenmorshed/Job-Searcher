@@ -15,6 +15,7 @@ import os
 import re
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -274,8 +275,9 @@ class Plan:
         return len(self.to_triage)
 
 
-def plan(conn, limit=None, on_status=None):
-    """Find the jobs not yet triaged under PROMPT_VERSION and estimate the cost (free)."""
+def plan(conn, limit=None, on_status=None, count_tokens=True):
+    """Find the jobs not yet triaged under PROMPT_VERSION and estimate the cost (free).
+    count_tokens=False skips the token count (and so the estimate) when nobody will see it."""
     # Results already saved under this version but with a different fingerprint mean the profile,
     # prompt, schema or model changed without PROMPT_VERSION being bumped.
     older = [row[0] for row in conn.execute(
@@ -289,19 +291,7 @@ def plan(conn, limit=None, on_status=None):
                    f"saved (fingerprint {', '.join(older)} -> {PROMPT_HASH}). Bump PROMPT_VERSION in triage.py to "
                    f"re-triage every job, or continue to triage only new jobs under {PROMPT_VERSION}.")
 
-    # Jobs with no result for this prompt version. Errors aren't saved, so failed jobs come back here.
-    jobs = [dict(row) for row in conn.execute(
-        """SELECT * FROM jobs j
-           WHERE j.duplicate_of IS NULL
-             AND NOT EXISTS (SELECT 1 FROM evaluations e
-                             WHERE e.job_id = j.id AND e.prompt_version = ?)
-           ORDER BY j.first_seen_at, j.id""",
-        (PROMPT_VERSION,),
-    )]
-    results = []
-    for job in jobs:
-        status, term = title_check(job["title"])
-        results.append({"job": job, "title_status": status, "title_term": term})
+    results = _untriaged(conn)
     p = Plan(
         warning=warning,
         excluded=[r for r in results if r["title_status"] == "excluded"],
@@ -310,7 +300,7 @@ def plan(conn, limit=None, on_status=None):
     )
     debug(f"title results: {len(p.excluded)} excluded, {len(p.combo)} combo -> {len(p.to_triage)} will go to Haiku "
           f"(limit={limit})")
-    if not p.to_triage:
+    if not p.to_triage or not count_tokens:
         return p
 
     # Free token count before spending anything, a few at a time.
@@ -336,9 +326,32 @@ SUMMARY = [
 ]
 
 
-def run(conn, p: Plan, log=print, should_stop=None):
-    """Save the title rejections, then triage the rest with Haiku (paid). Returns counts by reason."""
-    # Record the exact prompt behind this version the first time it's used.
+def _untriaged(conn, skip=()):
+    """Jobs with no result for this prompt version, each with its title check, oldest first.
+    Errors aren't saved, so failed jobs come back here. Jobs whose id is in skip are left out
+    before their full rows are read."""
+    ids = [row[0] for row in conn.execute(
+        """SELECT j.id FROM jobs j
+           WHERE j.duplicate_of IS NULL
+             AND NOT EXISTS (SELECT 1 FROM evaluations e
+                             WHERE e.job_id = j.id AND e.prompt_version = ?)
+           ORDER BY j.first_seen_at, j.id""",
+        (PROMPT_VERSION,),
+    ) if row[0] not in skip]
+    if not ids:
+        return []
+    rows = {row["id"]: dict(row) for row in conn.execute(
+        f"SELECT * FROM jobs WHERE id IN ({','.join('?' * len(ids))})", ids)}
+    results = []
+    for job_id in ids:
+        job = rows[job_id]
+        status, term = title_check(job["title"])
+        results.append({"id": job_id, "job": job, "title_status": status, "title_term": term})
+    return results
+
+
+def record_prompt(conn):
+    """Record the exact prompt behind this version the first time it's used."""
     conn.execute(
         """INSERT OR IGNORE INTO prompt_versions
                (prompt_hash, prompt_version, model, notes, system_text, schema_json, first_used_at)
@@ -348,11 +361,50 @@ def run(conn, p: Plan, log=print, should_stop=None):
     )
     conn.commit()
 
-    if p.excluded:
-        log(f"Rejected by title ({len(p.excluded)}), saved without an AI call:")
-    for r in p.excluded:
+
+def save_excluded(conn, excluded, log=print):
+    """Save the jobs rejected by the title rule. No AI call, so nothing is spent."""
+    if excluded:
+        log(f"Rejected by title ({len(excluded)}), saved without an AI call:")
+    for r in excluded:
         log(f"  - [{r['title_term']}] {r['job']['title']} | {r['job']['company']}")
         save_result(conn, r, None, "reject", "title_excluded", None)
+
+
+# --- For the streaming pipeline (pipeline.py) ---------------------------------------------------
+# The pipeline's loop calls find_work and save_answer on its own thread (the only one that touches
+# the database) and call_api in a thread pool, many at once. call_api never touches the database.
+
+@contextmanager
+def context():
+    load_dotenv()
+    yield anthropic.Anthropic(max_retries=5)  # more retries than the default, for rate limits
+
+
+def find_work(conn, skip=()):
+    """Jobs to send to Haiku: untriaged and not rejected by title (save_excluded handles those)."""
+    return [r for r in _untriaged(conn, skip) if r["title_status"] != "excluded"]
+
+
+def call_api(client, item):
+    """Ask Haiku about one job. Returns ((facts, usage), cost)."""
+    t, usage = triage(client, item["job"])
+    return (t, usage), cost(usage)
+
+
+def save_answer(conn, client, item, answer, run_id):
+    """Apply the rules and save. Returns (outcome, log line)."""
+    t, usage = answer
+    decision, reason = decide(item["title_status"], t)
+    save_result(conn, item, t, decision, reason, cost(usage), run_id)
+    job = item["job"]
+    return reason, f"{decision:<6} {reason:<20} {job['title']} | {job['company']}"
+
+
+def run(conn, p: Plan, log=print, should_stop=None):
+    """Save the title rejections, then triage the rest with Haiku (paid). Returns counts by reason."""
+    record_prompt(conn)
+    save_excluded(conn, p.excluded, log)
     counts = {reason: 0 for reason, _ in SUMMARY} | {"title_excluded": len(p.excluded), "errors": 0}
     if not p.to_triage:
         return {"counts": counts, "cost_usd": 0.0}

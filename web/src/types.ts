@@ -203,7 +203,7 @@ export interface FetchResult {
 }
 
 // What the Fetch button runs (PipelineParams in pipeline.py): a fetch (or none, to only process
-// saved jobs), then the AI steps, each asking before it spends unless auto_approve is set.
+// saved jobs), then the AI steps, which ask once before spending unless auto_approve is set.
 export interface PipelineParams {
   fetch: FetchParams | null
   process: boolean
@@ -251,7 +251,7 @@ export interface Task {
   finished_at: string | null
   steps: TaskStep[]
   approval: Approval | null
-  abort_requested: boolean // Abort was pressed; it stops after the current job
+  abort_requested: boolean // Abort was pressed; it stops once the calls already running finish
   log_lines: number
 }
 

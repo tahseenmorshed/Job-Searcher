@@ -65,7 +65,7 @@ export function useFetchTask(onFinished: () => void) {
     setTask(await api.task(task.id))
   }
 
-  // Stop after the current job; what's done so far is kept.
+  // Stop: no new calls start, and calls already running finish and are kept.
   async function abort() {
     if (!task) return
     await api.abort(task.id)

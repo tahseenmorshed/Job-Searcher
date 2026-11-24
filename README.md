@@ -16,7 +16,7 @@ Most of the work is done by AI, but every rating can be traced back to the exact
                                     rejected
 ```
 
-The **Fetch listings** button on the page runs all of these in order (`pipeline.py`). You can also run each step as a script.
+The **Fetch listings** button on the page runs all of these (`pipeline.py`). After the fetch, it shows what the AI steps should cost and asks once. Then triage, listing requirements and rating run together (`stream.py`): each job moves on to the next step as soon as it's done with the one before, rather than waiting for every job to finish that step. Each step makes up to 10 calls at once (8 for Jev; set in `LIMITS` in `pipeline.py`), so lower those if you hit an API rate limit. You can also run each step on its own as a script, one job at a time.
 
 1. **Fetch** (`ingest.py`, `ingest_linkedin.py`): Apify scrapers pull recent Seek and LinkedIn listings for Perth, Melbourne and Sydney and save them to a local SQLite database. Each run also writes a JSON backup to `data/`. Listings that are the same job as one already saved, from either site, are hidden (`dedupe.py`).
 2. **Triage** (`triage.py`, Claude Haiku): each new listing is sorted into **core** (software engineering), **adjacent** (DevOps, data, QA and similar) or **rejected**. Titles like "Principal" are rejected without an AI call, and jobs asking for far more experience than you have are rejected too. Only core jobs go further.
@@ -24,6 +24,8 @@ The **Fetch listings** button on the page runs all of these in order (`pipeline.
 4. **Rate each requirement** (`assess_jev.py`, Jev): [Jev](https://docs.typesafe.ai) is a model from TypeSafe that never writes text. It answers fixed questions with a probability for each possible answer. For every requirement it answers two questions:
    - **How essential is it?** It reads the listing and picks must-have, preferred or bonus.
    - **How well do you match it?** It reads your resume and picks direct, transferable, side project, stretch or none.
+
+   The two are separate requests, one reading the listing and one reading your resume, sent at the same time. A job whose requirements list came back empty is skipped, since Jev would have nothing to answer.
 5. **Score** (`scoring.py`, plain code): each requirement is worth points by how essential it is, and you earn a share of them by how well you match. The total becomes a score out of 100 and a rating from "Very strong match" to "Not suitable". See [How the score is worked out](#how-the-score-is-worked-out).
 6. **Review** (web UI): core jobs are listed best first. Each card opens into a step-by-step breakdown: the listing sentence, the exact question Jev was asked, its answer as bars, and the points earned.
 
@@ -137,15 +139,16 @@ Click **Fetch listings** in the page header to open the panel.
 
 1. **Pick cities:** any of Perth, Melbourne and Sydney.
 2. **Pick sites:** Seek, LinkedIn or both, each with its own timeframe. Seek offers 1, 3, 7, 14 or 31 days; LinkedIn's scraper offers 1, 7 or 30. The panel shows the fetch's estimated cost, based on recent runs.
-3. **Then:** leave **Triage, list requirements and rate new jobs** ticked to process the new jobs straight after the fetch. Tick **Don't ask before each step** to run every step without stopping for approval.
+3. **Then:** leave **Triage, list requirements and rate new jobs** ticked to process the new jobs straight after the fetch. Tick **Don't ask before spending** to go straight on without the approval question. That also skips the free token count behind the estimate, which takes about 20 seconds for 500 jobs.
 4. Click **Fetch now**. Or click **Process saved jobs** to skip the fetch and only process jobs already saved but not yet done.
 
 While it runs:
 
-- **Step list:** each step shows its status and progress, such as "12 of 40".
-- **Approval:** before each AI step, the panel shows how many jobs it will process, the model and the estimated cost, and waits for **Continue** or **Stop here**, like the scripts' y/N. Stopping skips the later steps too, since each works on what the one before produced. The panel stays open while a question is waiting, and a question left unanswered for an hour counts as Stop.
-- **Abort:** stops a run part way. The job in progress finishes first, so the button shows "Stopping…" for a moment. Jobs already done, and what was spent on them, are kept, and the rest are picked up next run. During a fetch, the scrape can't be cut short (Apify is already running it), so the fetch finishes and saves its jobs, then the run stops before any AI step. Pressed while a question is waiting, Abort counts as Stop.
-- **Log:** a small window shows each job as it's fetched, triaged and rated, like the scripts print. The API keeps it in memory only, so it's gone after a restart.
+- **Step list:** each step shows its status and progress, such as "12 done · 5 in progress". The three AI steps run at the same time, so a step can be running while the one before it is still going. A step with nothing to do yet shows "Waiting for jobs from the step before".
+- **Approval:** after the fetch, the panel asks once for all three AI steps, and waits for **Continue** or **Stop here**. It shows how many jobs need work and the estimated cost. Triage's cost is counted exactly. Listing requirements and rating can only be estimated, because how many jobs reach them depends on triage: the estimate assumes the share of jobs that turned out core before, and the average cost per job so far. Until the database has enough results of its own, it uses figures from the 22 November 2026 run (30% core). Stopping here spends nothing. The panel stays open while the question is waiting, and a question left unanswered for an hour counts as Stop.
+- **Abort:** stops a run part way. No new calls start, and calls waiting their turn are cancelled. Calls already running finish and are saved, so the button shows "Stopping…" for a few seconds. Jobs already done, and what was spent on them, are kept, and the rest are picked up next run. During a fetch, the scrape can't be cut short (Apify is already running it), so the fetch finishes and saves its jobs, then the run stops before any AI step. Pressed while the question is waiting, Abort counts as Stop.
+- **Stopping by itself:** if 10 calls in a row fail at one step, the run stops, for example when your Anthropic credit runs out or a key is wrong. The log shows the errors.
+- **Log:** a small window shows each job as it's fetched, triaged and rated. With the steps running together, lines from different steps are mixed, each starting with its step's name. At the end it shows how long each part took. The API keeps the log in memory only, so it's gone after a restart.
 - **Last fetched:** a table shows when each city was last fetched from each site.
 
 When the run finishes or is aborted, the job list and spend totals reload by themselves. Only one run can go at a time. If you reload the page mid-run, it picks the run up again.
@@ -158,7 +161,7 @@ If the API restarts mid-run (an edit with `--reload`, or a crash), the run is ma
 
 ### Running each step as a script
 
-The page and the scripts use the same code, so you can do it all from the terminal instead. Every step that spends money shows its count and estimated cost and asks first. Ctrl-C stops a step part way and keeps what was done.
+The page and the scripts use the same code, so you can do it all from the terminal instead. The scripts run one step at a time, one job at a time, so they're slower than the page but easier to follow. Every step that spends money shows its count and estimated cost and asks first. Ctrl-C stops a step part way and keeps what was done.
 
 ```bash
 python ingest.py           # fetch from Seek (--city Perth, --days 3, --max-pages, --dry-run)
@@ -175,7 +178,7 @@ Results show up in the page the next time it loads.
 The page uses these endpoints, so you can drive a run with `curl` too:
 
 ```bash
-# what the fetch would cost (free); the AI steps are estimated when they're reached
+# what the fetch would cost (free); the AI steps are estimated after the fetch
 curl -X POST localhost:8000/api/tasks/estimate -H 'Content-Type: application/json' \
      -d '{"kind": "pipeline", "params": {"fetch": {"cities": ["Perth"], "seek": {"days": 3}, "linkedin": null}}}'
 # start it: answers 202 with the task, or 409 if one is already running
@@ -183,12 +186,12 @@ curl -X POST localhost:8000/api/tasks -H 'Content-Type: application/json' \
      -d '{"kind": "pipeline", "params": {"fetch": {"cities": ["Perth"], "seek": {"days": 3}, "linkedin": null}}}'
 curl localhost:8000/api/tasks/1                 # status, steps, and the question it's waiting on
 curl -X POST localhost:8000/api/tasks/1/approval -H 'Content-Type: application/json' -d '{"approve": true}'
-curl -X POST localhost:8000/api/tasks/1/abort   # stop after the job in progress
+curl -X POST localhost:8000/api/tasks/1/abort   # stop: no new calls, running ones finish and are saved
 curl localhost:8000/api/tasks/1/log?after=0     # the log, from line 0
 curl localhost:8000/api/scrapes                 # when each city was last fetched from each site
 ```
 
-Set a site to `null` to skip it, or set `"fetch": null` to only process saved jobs. Add `"auto_approve": true` to skip the approval questions. Timeframes a site doesn't offer are refused before Apify is called.
+Set a site to `null` to skip it, or set `"fetch": null` to only process saved jobs. Add `"auto_approve": true` to skip the approval question. Timeframes a site doesn't offer are refused before Apify is called.
 
 ### Trying a few jobs first
 
@@ -286,6 +289,17 @@ python compare.py assess-v1 assess-v2-jev --job 34  # one job, requirement by re
 
 This shows how often two versions agree on ratings, scores, importance and match, where they differ, and which jobs moved most. It's how Sonnet, Haiku and Jev were compared while building this. It reads saved results only, with no AI calls.
 
+### Timing runs
+
+Every run from the page saves a record to `data/timings/run-<time>.json`. It holds how long the run took in total and in each part, how long it waited for your approval (left out when comparing), the number of jobs in each category, and every job with its category and how far it got. The times in the file name are UTC when running in Docker.
+
+```bash
+python compare_timings.py                   # the two latest runs
+python compare_timings.py OLD.json NEW.json  # two particular runs
+```
+
+This shows both runs' times side by side, with and without the fetch, and the counts in each category. It also lists every job whose category changed, matched by site and the site's own job id, so the two runs can come from different databases. Haiku doesn't always give the same answer twice, so a few borderline jobs can move between core and adjacent even with no code change. Different fetches also return different jobs, and those are listed separately.
+
 ### Seeing exactly what Jev was asked
 
 ```bash
@@ -319,13 +333,13 @@ python report.py --compare triage-v2   # jobs whose triage result changed
 
 ## Costs
 
-Measured on real runs unless marked as an estimate:
+Measured on real runs:
 
 | Step | Model | Per job |
 |---|---|---|
 | Triage | Haiku | $0.00024 |
-| List requirements | Haiku | about $0.0005–0.001 (estimate) |
-| Rate requirements | Jev | about $0.0003 (estimate) |
+| List requirements | Haiku | about $0.0018 (20 jobs, 22 November 2026) |
+| Rate requirements | Jev | about $0.00045 (19 jobs, 22 November 2026) |
 | Full assessment, the alternative | Sonnet | $0.035 |
 | Full assessment, the alternative | Haiku | $0.0033 |
 
@@ -363,8 +377,10 @@ Anthropic and Jev costs are worked out from token counts at the prices set in ea
 | `checks.py` | Quote checks for Claude assessments; confidence checks for Jev |
 | `compare.py` | Compares two assessment versions |
 | `report.py` | Text report of triage results |
-| `pipeline.py` | Fetch, then triage, list requirements and rate, asking before each paid step: the page's Fetch button |
-| `tasks.py` | Tracks runs started from the page: status, steps, log, approval questions and abort |
+| `compare_timings.py` | Compares two runs' timing records: times, category counts, and jobs whose category changed |
+| `pipeline.py` | Fetch, then triage, list requirements and rate, asking once before spending: the page's Fetch button. Saves each run's timings to `data/timings/` |
+| `stream.py` | The loop that runs triage, listing requirements and rating together, many calls at once |
+| `tasks.py` | Tracks runs started from the page: status, steps, log, the approval question and abort |
 | `scrapes.py` | Records when each city was last fetched from each site (`python scrapes.py`; `--backfill` reads old backups in `data/`) |
 | `api.py` | The HTTP API the web UI uses: jobs, spend, and starting and following runs |
 | `spend.py` | Records what each run spends, and shows it (`python spend.py`) |
@@ -374,6 +390,7 @@ Anthropic and Jev costs are worked out from token counts at the prices set in ea
 | `Dockerfile`, `docker-compose.yml`, `.dockerignore` | Run the whole app in one container (see [Run with Docker](#run-with-docker)) |
 | `resume.md`, `profile.md`, `preferences.toml` | Your details |
 | `data/jobseeker.db` | The database: listings, every AI result, every prompt and every Jev request |
+| `data/timings/` | One timing record per run from the page (see [Timing runs](#timing-runs)) |
 
 `config.toml` isn't read by any script. It was an earlier plan for search settings across Seek, Indeed and LinkedIn; `ingest.py` uses its own constants instead.
 

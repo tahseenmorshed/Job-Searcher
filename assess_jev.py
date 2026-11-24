@@ -29,6 +29,8 @@ import json
 import os
 import sys
 import tomllib
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -156,17 +158,28 @@ def estimate_tokens(job, criteria, resume):
     return chars // 4
 
 
-def load_jobs(conn, limit=None, job_ids=None, include_done=False):
-    """Jobs with a REQUIREMENTS_VERSION list (and, unless include_done, no VERSION result yet), each with its criteria."""
-    sql = """SELECT j.*, x.id AS extraction_id, x.triage_version FROM jobs j
+def load_jobs(conn, limit=None, job_ids=None, include_done=False, skip=()):
+    """Jobs with a REQUIREMENTS_VERSION list (and, unless include_done, no VERSION result yet), each with its criteria.
+
+    A list with no requirements is left out: Jev would have no questions to answer, and refuses
+    a request without any. Jobs whose id is in skip are left out before their rows are read."""
+    sql = """SELECT j.id FROM jobs j
              JOIN extractions x ON x.job_id = j.id AND x.requirements_version = ?
-             WHERE (? OR NOT EXISTS (SELECT 1 FROM assessments a WHERE a.job_id = j.id AND a.assess_version = ?))"""
+             WHERE (? OR NOT EXISTS (SELECT 1 FROM assessments a WHERE a.job_id = j.id AND a.assess_version = ?))
+               AND EXISTS (SELECT 1 FROM requirements r WHERE r.extraction_id = x.id)"""
     params = [REQUIREMENTS_VERSION, include_done, VERSION]
     if job_ids:
         sql += f" AND j.id IN ({','.join('?' * len(job_ids))})"
         params += job_ids
     sql += " ORDER BY j.posted_at DESC"
-    jobs = [dict(row) for row in conn.execute(sql, params)][:limit]
+    ids = [row[0] for row in conn.execute(sql, params) if row[0] not in skip][:limit]
+    if not ids:
+        return []
+    rows = {row["id"]: dict(row) for row in conn.execute(
+        f"""SELECT j.*, x.id AS extraction_id, x.triage_version FROM jobs j
+            JOIN extractions x ON x.job_id = j.id AND x.requirements_version = ?
+            WHERE j.id IN ({','.join('?' * len(ids))})""", [REQUIREMENTS_VERSION, *ids])}
+    jobs = [rows[job_id] for job_id in ids]
     for job in jobs:
         job["criteria"] = [dict(c) for c in conn.execute(
             "SELECT * FROM requirements WHERE extraction_id = ? ORDER BY position", (job["extraction_id"],))]
@@ -195,16 +208,25 @@ def token_cost(tokens):
     return tokens * PRICE_PER_M_INPUT / 1_000_000
 
 
+# Sends a job's two requests at the same time: neither needs the other's answer.
+_requests_pool = ThreadPoolExecutor(max_workers=32, thread_name_prefix="jev-request")
+
+
 def assess(client, job, resume, prefs):
     requests = build_requests(job, resume, prefs)
-    responses = []
-    try:
-        for state, questions in requests:
-            responses.append(client.system_one(state=state, questions=questions))
-    except (TypeSafeAPIError, TypeSafeError) as e:
-        if responses:  # the first request was answered and billed before the second failed
-            raise spend.BilledError(str(e), token_cost(sum(r.usage.input_tokens or 0 for r in responses))) from e
-        raise
+    futures = [_requests_pool.submit(client.system_one, state=state, questions=questions)
+               for state, questions in requests]
+    responses, errors = [], []
+    for future in futures:
+        try:
+            responses.append(future.result())
+        except (TypeSafeAPIError, TypeSafeError) as e:
+            errors.append(e)
+    if errors:
+        billed = sum(r.usage.input_tokens or 0 for r in responses)
+        if billed:  # one request was answered, and billed, though the other failed
+            raise spend.BilledError(str(errors[0]), token_cost(billed)) from errors[0]
+        raise errors[0]
     tokens = sum(r.usage.input_tokens or 0 for r in responses)
     return requests, responses, tokens
 
@@ -366,20 +388,69 @@ class Plan:
         return len(self.jobs_list)
 
 
-def plan(conn, limit=None, job_ids=None, on_status=None):
-    """Find jobs with a requirement list and no VERSION result, and estimate the cost (free)."""
+def _inputs():
+    """The resume, preferences and their fingerprint: what Jev reads besides the listing."""
     resume = RESUME_PATH.read_text()
     prefs = tomllib.loads(Path("preferences.toml").read_text())
-    prompt_hash = fingerprint(resume, prefs)
+    return resume, prefs, fingerprint(resume, prefs)
+
+
+def prompt_warning(conn, prompt_hash=None):
+    """A warning if results were saved under this version from a different resume, facts or
+    questions, else None."""
+    prompt_hash = prompt_hash or _inputs()[2]
     older = [row[0] for row in conn.execute(
         """SELECT DISTINCT prompt_hash FROM assessments
            WHERE assess_version = ? AND prompt_hash IS NOT NULL AND prompt_hash != ?""", (VERSION, prompt_hash))]
-    warning = None
-    if older:
-        warning = (f"resume.md, the candidate facts in preferences.toml, or Jev's questions changed since "
-                   f"{VERSION} results were saved ({', '.join(older)} -> {prompt_hash}). Bump VERSION in "
-                   f"assess_jev.py to re-rate every job; continuing rates only new jobs, so old and new results "
-                   f"would be mixed.")
+    if not older:
+        return None
+    return (f"resume.md, the candidate facts in preferences.toml, or Jev's questions changed since "
+            f"{VERSION} results were saved ({', '.join(older)} -> {prompt_hash}). Bump VERSION in "
+            f"assess_jev.py to re-rate every job; continuing rates only new jobs, so old and new results "
+            f"would be mixed.")
+
+
+# --- For the streaming pipeline (pipeline.py) ---------------------------------------------------
+# find_work and save_answer run on the loop's thread; call_api runs in a thread pool and never
+# touches the database.
+
+@dataclass
+class Context:
+    client: TypeSafeClient
+    resume: str
+    prefs: dict
+    prompt_hash: str
+
+
+@contextmanager
+def context():
+    check_key()
+    resume, prefs, prompt_hash = _inputs()
+    with TypeSafeClient() as client:  # an httpx client underneath, safe to share across threads
+        yield Context(client, resume, prefs, prompt_hash)
+
+
+def find_work(conn, skip=()):
+    return [{"id": job["id"], "job": job} for job in load_jobs(conn, skip=skip)]
+
+
+def call_api(ctx, item):
+    """Both Jev requests for one job, sent at once. Returns ((requests, responses, tokens), cost)."""
+    requests, responses, tokens = assess(ctx.client, item["job"], ctx.resume, ctx.prefs)
+    return (requests, responses, tokens), token_cost(tokens)
+
+
+def save_answer(conn, ctx, item, answer, run_id):
+    requests, responses, tokens = answer
+    job = item["job"]
+    save(conn, job, requests, responses, tokens, ctx.prompt_hash, run_id)
+    return "rated", f"{job['title']} | {job['company']} ({len(job['criteria'])} requirements, {tokens:,} tokens)"
+
+
+def plan(conn, limit=None, job_ids=None, on_status=None):
+    """Find jobs with a requirement list and no VERSION result, and estimate the cost (free)."""
+    resume, prefs, prompt_hash = _inputs()
+    warning = prompt_warning(conn, prompt_hash)
     jobs = load_jobs(conn, limit, job_ids)
     p = Plan(warning=warning, jobs_list=jobs, resume=resume, prefs=prefs, prompt_hash=prompt_hash)
     p.input_tokens = sum(estimate_tokens(j, j["criteria"], resume) for j in jobs)

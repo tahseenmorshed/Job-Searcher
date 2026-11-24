@@ -1,6 +1,6 @@
 // Fetch new listings, then triage them, list requirements and rate them. Pick cities and sources
-// (each with its own timeframe), see what the fetch is likely to cost, and start it. Each AI step
-// then shows its own estimate and waits for Continue or Stop, unless auto-approve is on. A log
+// (each with its own timeframe), see what the fetch is likely to cost, and start it. After the
+// fetch, the AI steps show one estimate and wait for Continue or Stop, unless auto-approve is on. A log
 // window shows what it's doing, line by line. The work runs on the API (pipeline.py), so closing
 // or reloading the page doesn't stop it; the page picks it up again when it reopens.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
@@ -184,9 +184,9 @@ export function FetchPanel({ fetchTask, reloads }: { fetchTask: FetchTask; reloa
               Triage, list requirements and rate new jobs
             </label>
             {process && (
-              <label className="flex items-center gap-1.5" title="Each AI step normally shows its cost and waits for you">
+              <label className="flex items-center gap-1.5" title="Normally the AI steps' cost is shown once, and waits for you">
                 <input type="checkbox" checked={autoApprove} onChange={(e) => setAutoApprove(e.target.checked)} />
-                Don't ask before each step
+                Don't ask before spending
               </label>
             )}
           </Row>
@@ -222,7 +222,7 @@ export function FetchPanel({ fetchTask, reloads }: { fetchTask: FetchTask; reloa
                   <span className="mt-1 block">
                     {autoApprove
                       ? 'The AI steps will run without asking.'
-                      : 'Each AI step shows its cost and waits for you before spending.'}
+                      : 'The AI steps show their cost once and wait for you before spending.'}
                   </span>
                 )}
               </>
@@ -334,7 +334,7 @@ function TaskStatus({
           <button
             onClick={onAbort}
             disabled={task.abort_requested}
-            title="Stops after the job in progress. Finished jobs are kept, and the rest are picked up next run."
+            title="Stops starting new calls. Calls already running finish and are kept, and the rest are picked up next run."
             className="shrink-0 rounded-md border border-red-300 px-2 py-0.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950/40"
           >
             {task.abort_requested ? 'Stopping…' : 'Abort'}
@@ -353,7 +353,7 @@ function TaskStatus({
           {task.abort_requested
             ? task.steps.find((s) => s.status === 'running')?.key === 'fetch'
               ? "Stopping once the fetch finishes: a scrape can't be cut short, and its jobs will still be saved."
-              : 'Stopping after the job in progress…'
+              : 'Stopping: calls already running will finish and be saved…'
             : `${elapsed(task.started_at ?? task.created_at, now)} so far. You can close this page; it keeps going.`}
         </p>
       )}

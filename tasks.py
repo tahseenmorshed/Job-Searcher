@@ -7,7 +7,7 @@ GET /api/tasks/{id} to follow it.
 While a task runs it also has live state, kept in memory only (it's gone after a restart):
   - a log of what it's doing, line by line, like the scripts print (GET /api/tasks/{id}/log)
   - each step's status, for the page's step list
-  - a question waiting for an answer: a paid step asks before it spends (POST .../approval)
+  - a question waiting for an answer: the AI steps ask once before spending (POST .../approval)
 
 This module only records status. The work itself lives in each step's module (e.g. ingest.run),
 so the command-line scripts and the page share it. Money spent is still recorded in the runs
@@ -102,8 +102,8 @@ class Live:
         return bool(answered and self._answer and not self.aborted())
 
     def abort(self):
-        """Ask the work to stop: the current job finishes, then it stops. A question waiting for
-        an answer counts as Stop."""
+        """Ask the work to stop: no new calls start, and calls already running finish and are
+        saved. A question waiting for an answer counts as Stop."""
         self._abort.set()
         if self.approval is not None:
             self.answer(False)
